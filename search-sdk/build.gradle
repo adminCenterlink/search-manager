@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.cp'
-version = '0.1.1'   // ← gms-biz 측에서 쓸 버전
+version = '0.1.1-SNAPSHOT'   // ← gms-biz 측에서 쓸 버전
 
 java {
     toolchain {
@@ -31,9 +31,9 @@ publishing {
         maven(MavenPublication) {
             from components.java
 
-            groupId = project.group          // com.cp
-            artifactId = 'search-engine-sdk' // ★ 폴더 이름 상관없이 명시적으로!
-            version = project.version        // 0.1
+            groupId = project.group
+            artifactId = 'search-engine-sdk'
+            version = project.version
         }
     }
 

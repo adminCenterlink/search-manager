@@ -61,6 +61,27 @@ public class SearchEngineIndexingApi {
         }
     }
 
+    public void fileDeleteIndexingApiRequest(String uuid) {
+        String targetUrl = String.format("%s/%s/%s", baseUrl, "file-index", uuid);
+        try {
+            HttpResponse<String> response = Unirest.delete(targetUrl).asString();
+            if (!response.isSuccess()) {
+                log.error("SearchEngine request failed: status={}, body={}", response.getStatus(), response.getBody());
+
+                throw new SearchEngineException(
+                        "검색 서버 오류: status=" + response.getStatus() +
+                                ", body=" + response.getBody()
+                );
+            }
+
+            log.info("SearchEngine request success (status={})", response.getStatus());
+
+        } catch (UnirestException e) {
+            log.error("SearchEngine HTTP 호출 실패: url={}", targetUrl, e);
+            throw new SearchEngineException("검색 서버 HTTP 호출 실패", e);
+        }
+    }
+
     // 헬퍼 메서드 (서비스 코드에서 더 깔끔하게 사용 가능)
     public void sync(String indexName, String uuid) {
         searchEngineIndexingApiRequest("sync", indexName, uuid);
