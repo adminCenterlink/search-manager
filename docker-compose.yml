@@ -70,7 +70,7 @@ services:
       - TZ=Asia/Seoul
       # Override hosts for container networking
       - OPEN_SEARCH_HOST=opensearch-node
-      - SEARCH_INTELLIGENCE_URL=http://search-intelligence
+      - SEARCH_INTELLIGENCE_HOST=http://search-intelligence
       - UPLOAD_PATH=/app/upload # 컨테이너 내부에서 사용될 UPLOAD_PATH
       - SEARCH_INDEXES_FILE_LOCAL_PATH_PREFIX=/Users/centerlink/app/upload # localPathPrefix 명시적 설정
     depends_on:
