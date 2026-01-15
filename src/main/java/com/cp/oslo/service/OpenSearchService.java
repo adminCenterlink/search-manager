@@ -388,12 +388,6 @@ public class OpenSearchService {
                                 .postTags("</b>")
                                 .fragmentSize(100)
                                 .numberOfFragments(1)
-                                .highlightQuery(hq -> hq.bool(b -> {
-                                    for (String token : query.split("\\s+")) {
-                                        b.should(s -> s.matchPhrase(mp -> mp.field("TITLE").query(token)));
-                                    }
-                                    return b;
-                                }))
                         )
                         .fields("CONTENTS", f -> f
                                 .type(t -> t.builtin(BuiltinHighlighterType.Unified))
@@ -401,12 +395,6 @@ public class OpenSearchService {
                                 .postTags("</b>")
                                 .fragmentSize(100)
                                 .numberOfFragments(1)
-                                .highlightQuery(hq -> hq.bool(b -> {
-                                    for (String token : query.split("\\s+")) {
-                                        b.should(s -> s.matchPhrase(mp -> mp.field("CONTENTS").query(token)));
-                                    }
-                                    return b;
-                                }))
                         )
                         .fields("CAT_NM", f -> f // CAT_NM 필드도 하이라이팅에 포함
                                 .type(t -> t.builtin(BuiltinHighlighterType.Unified))
@@ -414,12 +402,6 @@ public class OpenSearchService {
                                 .postTags("</b>")
                                 .fragmentSize(100)
                                 .numberOfFragments(1)
-                                .highlightQuery(hq -> hq.bool(b -> {
-                                    for (String token : query.split("\\s+")) {
-                                        b.should(s -> s.matchPhrase(mp -> mp.field("CAT_NM").query(token)));
-                                    }
-                                    return b;
-                                }))
                         )
                 );
             }
@@ -433,12 +415,6 @@ public class OpenSearchService {
                                 .postTags("</b>")
                                 .fragmentSize(HIGHLIGHT_FRAGMENT_SIZE)
                                 .numberOfFragments(HIGHLIGHT_NUM_OF_FRAGMENTS)
-                                .highlightQuery(hq -> hq.bool(b -> {
-                                    for (String token : query.split("\\s+")) {
-                                        b.should(s -> s.matchPhrase(mp -> mp.field("TITLE").query(token)));
-                                    }
-                                    return b;
-                                }))
                         )
                         .fields("CONTENTS", f -> f
                                 .type(t -> t.builtin(BuiltinHighlighterType.Unified))
@@ -446,12 +422,6 @@ public class OpenSearchService {
                                 .postTags("</b>")
                                 .fragmentSize(HIGHLIGHT_FRAGMENT_SIZE)
                                 .numberOfFragments(HIGHLIGHT_NUM_OF_FRAGMENTS)
-                                .highlightQuery(hq -> hq.bool(b -> {
-                                    for (String token : query.split("\\s+")) {
-                                        b.should(s -> s.matchPhrase(mp -> mp.field("CONTENTS").query(token)));
-                                    }
-                                    return b;
-                                }))
                         )
                 );
             }
@@ -696,6 +666,7 @@ public class OpenSearchService {
                                                                                 .matchPhrase(mp -> mp
                                                                                     .field(nestedPath + "." + textField)
                                                                                     .query(queryText)
+                                                                                    .analyzer("nori_custom")
                                                                                 )
                                                                             )
                                                                     )
@@ -735,6 +706,7 @@ public class OpenSearchService {
                                         .matchPhrase(mp -> mp
                                             .field("FILE_NM")
                                             .query(queryText)
+                                            .analyzer("nori_custom")
                                         )
                                     )
                             )
@@ -854,6 +826,7 @@ public class OpenSearchService {
                                                                                 .matchPhrase(mp -> mp
                                                                                     .field(nestedPath + "." + textField)
                                                                                     .query(queryText)
+                                                                                    .analyzer("nori_custom")
                                                                                 )
                                                                             )
                                                                     )
@@ -875,6 +848,7 @@ public class OpenSearchService {
                                         .matchPhrase(mp -> mp
                                             .field("FILE_NM")
                                             .query(queryText)
+                                            .analyzer("nori_custom")
                                         )
                                     )
                             )
@@ -958,68 +932,62 @@ public class OpenSearchService {
     private IndexSettings createIndexSettings(Integer numberOfShards, Integer numberOfReplicas, IndexDefinition definition) {
         List<String> synonyms = analyzerConfigLoader.loadSynonyms();
         List<String> stopwords = analyzerConfigLoader.loadStopwords();
+        List<String> dictionary = analyzerConfigLoader.loadUserDictionary();
         
-        List<String> filters = new java.util.ArrayList<>();
-        filters.add("lowercase");
-        filters.add("nori_part_of_speech"); // 조사 제거를 먼저 수행하여 동의어 매칭 효율 증대
+        // 공통 필터 (소문자, 조사 제거 등)
+        List<String> commonFilters = new java.util.ArrayList<>();
+        commonFilters.add("lowercase");
+        commonFilters.add("nori_part_of_speech"); 
         
-        // 동의어 필터가 유효한지 확인하고 필터 목록에 추가
-        boolean hasSynonyms = synonyms != null && !synonyms.isEmpty();
-        if (hasSynonyms) {
-            filters.add("synonym_filter");
+        if (synonyms != null && !synonyms.isEmpty()) {
+            commonFilters.add("synonym_filter");
         }
-        
-        // 불용어 필터가 유효한지 확인하고 필터 목록에 추가
-        boolean hasStopwords = stopwords != null && !stopwords.isEmpty();
-        if (hasStopwords) {
-            filters.add("stopword_filter");
+        if (stopwords != null && !stopwords.isEmpty()) {
+            commonFilters.add("stopword_filter");
         }
-        
-        filters.add("length_filter"); // 1글자 토큰 제거 필터 (노이즈 매칭 방지)
-        filters.add("nori_readingform");
+        commonFilters.add("nori_readingform");
 
         IndexSettings.Builder builder = new IndexSettings.Builder()
                 .numberOfShards(String.valueOf(numberOfShards))
                 .numberOfReplicas(String.valueOf(numberOfReplicas))
                 .analysis(a -> {
-                    // 1. 필터 정의 (조건부)
-                    if (hasSynonyms) {
+                    // 1. 필터 정의
+                    if (synonyms != null && !synonyms.isEmpty()) {
                         a.filter("synonym_filter", tf -> tf
                                 .definition(tfd -> tfd.synonym(syn -> syn
                                         .synonyms(synonyms)
-                                        .tokenizer("whitespace") // 정규화된 데이터에는 whitespace가 가장 안전
-                                        .lenient(true) // 오류 발생 규칙 무시 (전체 실패 방지)
+                                        .tokenizer("whitespace")
+                                        .lenient(true)
                                 )));
                     }
-                    if (hasStopwords) {
+                    if (stopwords != null && !stopwords.isEmpty()) {
                         a.filter("stopword_filter", tf -> tf
                                 .definition(tfd -> tfd.stop(stop -> stop.stopwords(stopwords))));
                     }
                     
-                    // 1글자 제거 필터 정의 (최소 2글자 이상만 허용)
-                    a.filter("length_filter", tf -> tf
-                            .definition(tfd -> tfd.length(len -> len
-                                    .min(2)
-                                    .max(100) // max 값 필수 지정 (충분히 큰 값으로 설정)
-                            ))
-                    );
-                    
                     // 2. 토크나이저 정의
                     a.tokenizer("nori_tokenizer_mixed", t -> t
                             .definition(td -> td
-                                    .noriTokenizer(nt -> nt
-                                            .decompoundMode(NoriDecompoundMode.Mixed)
-                                    )
+                                    .noriTokenizer(nt -> {
+                                        nt.decompoundMode(NoriDecompoundMode.Discard); // Mixed -> Discard로 변경
+                                        if (dictionary != null && !dictionary.isEmpty()) {
+                                            nt.userDictionaryRules(dictionary);
+                                        }
+                                        return nt;
+                                    })
                             )
                     );
                     
                     // 3. 분석기 정의
+                    
+                    // 3-1. 인덱싱용 분석기 (nori_custom): 길이 제한 없음 (모든 텀 저장)
                     a.analyzer("nori_custom", an -> an
                             .custom(ca -> ca
                                     .tokenizer("nori_tokenizer_mixed")
-                                    .filter(filters)
+                                    .filter(commonFilters)
                             )
                     );
+                    
                     return a;
                 });
 
@@ -1042,7 +1010,6 @@ public class OpenSearchService {
         }
 
         // YAML 설정의 벡터 필드 추가
-        // 단, file 인덱스는 이미 IndexRegistry에서 Nested 구조로 벡터 필드를 정의했으므로 중복 추가 방지
         if (!"file".equalsIgnoreCase(indexName) && vectorFieldConfig.hasVectorField(indexName)) {
             VectorFieldConfig.VectorField vectorField = vectorFieldConfig.getVectorField(indexName);
             Property vectorProperty = Property.of(p -> p.knnVector(knn -> 
@@ -1066,10 +1033,12 @@ public class OpenSearchService {
         return switch (field.getType()) {
             case TEXT -> Property.of(p -> p.text(t -> {
                 if (field.getAnalyzer() != null) {
-                    String analyzer = "nori".equals(field.getAnalyzer()) 
-                            ? "nori_custom" 
-                            : field.getAnalyzer();
-                    t.analyzer(analyzer);
+                    if ("nori".equals(field.getAnalyzer())) {
+                        // 인덱싱과 검색 모두 nori_custom 사용 (1글자 검색 허용, 하이라이팅 일치)
+                        t.analyzer("nori_custom");
+                    } else {
+                        t.analyzer(field.getAnalyzer());
+                    }
                 }
                 return t;
             }));
