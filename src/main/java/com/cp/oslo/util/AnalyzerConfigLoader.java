@@ -25,6 +25,7 @@ public class AnalyzerConfigLoader {
     
     private static final String SYNONYMS_KEY_PATH = "System.SearchEngine.Synonyms";
     private static final String STOPWORDS_KEY_PATH = "System.SearchEngine.StopWords";
+    private static final String DICTIONARY_KEY_PATH = "System.SearchEngine.Dictionary";
     
     /**
      * 동의어 목록을 로드합니다.
@@ -72,6 +73,15 @@ public class AnalyzerConfigLoader {
      */
     public List<String> loadStopwords() {
         return loadFromDatabase(STOPWORDS_KEY_PATH, "불용어");
+    }
+
+    /**
+     * 사용자 사전 목록을 로드합니다.
+     * 
+     * @return 사용자 사전 목록 (보냉백 보냉 백)
+     */
+    public List<String> loadUserDictionary() {
+        return loadFromDatabase(DICTIONARY_KEY_PATH, "사용자 사전");
     }
 
     /**
