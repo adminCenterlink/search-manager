@@ -80,7 +80,7 @@ search-intelligence:
   url: '${SEARCH_INTELLIGENCE_HOST:http://localhost}:${SEARCH_INTELLIGENCE_PORT:8000}'
   rerank:
     enabled: true
-    window-size: 50
+    window-size: 20
   # 각 인덱스별 벡터 필드 설정
   vector-fields:
     manual:
