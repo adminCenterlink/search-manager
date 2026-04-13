@@ -71,10 +71,27 @@ docker run -d \
 # 3.3.2 버전 풀
 docker pull opensearchproject/opensearch:3.3.2
 
+# 컨테이너를 실행
+docker run -d \
+  --name opensearch-node \
+  -p ${OPEN_SEARCH_PORT_1:-9200}:9200 \
+  -p ${OPEN_SEARCH_PORT_2:-9600}:9600 \
+  -e "discovery.type=single-node" \
+  -e "cluster.name=opensearch-cluster" \
+  -e "node.name=opensearch-node" \
+  -e "DISABLE_SECURITY_PLUGIN=true" \
+  -e "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m" \
+  opensearchproject/opensearch:3.3.2
+
 # nori 플러그인 설치
 docker exec -it opensearch-node ./bin/opensearch-plugin install analysis-nori
 
-# 이 후 2번의 docker run으로 실행
+# 이 후 컨테이너 재시작
+docker restart opensearch-node
+
+# 평소에 opensearch 시작
+docker start opensearch-node
+
 ```
 
 ### 4. Search Intelligence Service 실행
