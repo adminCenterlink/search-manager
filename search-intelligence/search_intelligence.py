@@ -10,17 +10,21 @@ import gc
 import easyocr
 import cv2
 from pdf2image import convert_from_bytes
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import onnxruntime as ort
+from onnxruntime.quantization import quantize_dynamic, QuantType
+import time
 
 load_dotenv()
 
 app = FastAPI()
 
-# MPS 사용 가능 여부 확인 및 설정
+# 디바이스 자동 감지: CUDA > MPS > CPU
 device = "cpu"
-if torch.backends.mps.is_available():
-    device = "mps"
-elif torch.cuda.is_available(): # CUDA(NVIDIA GPU)도 확인
+if torch.cuda.is_available():
     device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
 
 print(f"Using device: {device}")
 
@@ -35,18 +39,88 @@ reader = easyocr.Reader(['ko', 'en'], gpu=use_gpu)
 embed_model = SentenceTransformer(os.getenv('EMBEDDING_MODEL_NAME', 'jhgan/ko-sroberta-sts'), device=device)
 
 # 2. Reranking Model Load
-# use_fp16=True is only beneficial for CUDA
-use_fp16 = (device == "cuda")
+# GPU 사용 가능하면 FlagReranker(PyTorch), CPU만 가능하면 ONNX INT8로 자동 전환
 reranker_model_name = os.getenv('RERANKER_MODEL_NAME', 'BAAI/bge-reranker-base')
-print(f"Loading Reranker Model: {reranker_model_name} (fp16={use_fp16})")
+onnx_env = os.getenv('USE_ONNX_RERANKER', 'auto').lower()
+if onnx_env == 'auto':
+    use_onnx = (device == "cpu")  # CPU일 때만 ONNX 사용
+else:
+    use_onnx = (onnx_env == 'true')
 
-# FlagReranker는 내부적으로 device를 자동 감지하거나 설정할 수 있음.
-# BAAI/bge-reranker-v2-m3
-reranker = FlagReranker(
-    reranker_model_name,
-    use_fp16=use_fp16,
-    trust_remote_code=True
-)
+def export_reranker_to_onnx(model_name, onnx_path):
+    """PyTorch 모델을 ONNX로 수동 변환"""
+    print(f"ONNX 변환 시작: {model_name} -> {onnx_path}")
+    pt_model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, trust_remote_code=True
+    )
+    pt_model.eval()
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+
+    dummy_input = tokenizer(
+        [["query", "document"]], padding=True, truncation=True,
+        max_length=512, return_tensors="pt"
+    )
+
+    torch.onnx.export(
+        pt_model,
+        (dummy_input["input_ids"], dummy_input["attention_mask"]),
+        onnx_path,
+        input_names=["input_ids", "attention_mask"],
+        output_names=["logits"],
+        dynamic_axes={
+            "input_ids": {0: "batch", 1: "seq"},
+            "attention_mask": {0: "batch", 1: "seq"},
+            "logits": {0: "batch"},
+        },
+        opset_version=14,
+        dynamo=False,  # 레거시 모드: INT8 양자화 호환
+    )
+    del pt_model
+    gc.collect()
+    print(f"ONNX 변환 완료: {onnx_path}")
+
+if use_onnx:
+    onnx_dir = os.path.join(os.path.dirname(__file__) or ".", "onnx_models")
+    os.makedirs(onnx_dir, exist_ok=True)
+    onnx_fp32_path = os.path.join(onnx_dir, "reranker.onnx")
+    onnx_int8_path = os.path.join(onnx_dir, "reranker_int8.onnx")
+
+    # 1) FP32 ONNX 변환
+    if not os.path.exists(onnx_fp32_path):
+        export_reranker_to_onnx(reranker_model_name, onnx_fp32_path)
+
+    # 2) INT8 동적 양자화 (CPU 최적화 핵심)
+    if not os.path.exists(onnx_int8_path):
+        print("INT8 양자화 시작...")
+        quantize_dynamic(
+            onnx_fp32_path,
+            onnx_int8_path,
+            weight_type=QuantType.QInt8,
+        )
+        print("INT8 양자화 완료")
+
+    print(f"Loading Reranker Model (ONNX INT8): {onnx_int8_path}")
+    reranker_tokenizer = AutoTokenizer.from_pretrained(reranker_model_name, trust_remote_code=True)
+
+    # ONNX Runtime 세션 최적화
+    sess_options = ort.SessionOptions()
+    sess_options.inter_op_num_threads = os.cpu_count()
+    sess_options.intra_op_num_threads = os.cpu_count()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    reranker_session = ort.InferenceSession(onnx_int8_path, sess_options, providers=["CPUExecutionProvider"])
+    reranker = None
+    print("ONNX INT8 Reranker 로드 완료")
+else:
+    print(f"Loading Reranker Model (FlagReranker): {reranker_model_name}")
+    use_fp16 = (device == "cuda")
+    reranker = FlagReranker(
+        reranker_model_name,
+        use_fp16=use_fp16,
+        trust_remote_code=True
+    )
+    reranker_tokenizer = None
+    reranker_session = None
 
 class TextRequest(BaseModel):
     text: str
@@ -65,7 +139,6 @@ async def embed_text(request: TextRequest):
 
 @app.post("/embed/batch")
 async def embed_texts(request: TextsRequest):
-    import time
     start_time = time.time()
 
     safe_batch_size = 8 # 메모리 부족 방지를 위해 32 -> 8로 축소
@@ -97,33 +170,56 @@ async def rerank_documents(request: RerankRequest):
     if not request.documents:
         return {"scores": [], "indices": []}
 
+    start_time = time.time()
+
     # (query, document) 쌍 생성
     pairs = [[request.query, doc] for doc in request.documents]
-    
-    # 점수 계산
-    # compute_score는 리스트 형태의 점수를 반환 (예: [0.1, 0.9, -0.5])
-    # batch_size 조절 가능
-    try:
-        scores = reranker.compute_score(pairs, batch_size=16) # 리랭킹 배치 사이즈 4 -> 16으로 증가
-    finally:
-        # 리랭킹 후에도 메모리 해제
-        gc.collect()
-        if device == "mps":
-            torch.mps.empty_cache()
-        elif device == "cuda":
-            torch.cuda.empty_cache()
-    
+
+    if use_onnx and reranker_session is not None:
+        # ONNX Runtime 추론: 배치 단위로 처리
+        batch_size = 8
+        all_scores = []
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i:i+batch_size]
+            inputs = reranker_tokenizer(
+                batch, padding=True, truncation=True,
+                max_length=512, return_tensors="np"  # numpy로 직접 변환
+            )
+            logits = reranker_session.run(
+                ["logits"],
+                {
+                    "input_ids": inputs["input_ids"],
+                    "attention_mask": inputs["attention_mask"],
+                }
+            )[0]
+            # logits shape: (batch, 1) 또는 (batch,)
+            batch_scores = logits.squeeze(-1).tolist()
+            if isinstance(batch_scores, float):
+                batch_scores = [batch_scores]
+            all_scores.extend(batch_scores)
+        scores = all_scores
+    else:
+        # FlagReranker 폴백
+        try:
+            scores = reranker.compute_score(pairs, batch_size=16)
+        finally:
+            gc.collect()
+            if device == "mps":
+                torch.mps.empty_cache()
+            elif device == "cuda":
+                torch.cuda.empty_cache()
+
     # 단건일 경우 float 반환될 수 있으므로 리스트로 변환
     if isinstance(scores, float):
         scores = [scores]
-    
+
     # 점수 내림차순으로 인덱스 정렬
-    # numpy argsort는 오름차순이므로 [::-1]로 뒤집음
     indices = np.argsort(scores)[::-1].tolist()
-    
-    # 점수도 Python list로 변환 (JSON 직렬화)
     scores_list = [float(s) for s in scores]
-    
+
+    elapsed = time.time() - start_time
+    print(f"[Rerank] {len(request.documents)}건 리랭킹 소요 시간: {elapsed:.4f}초 (ONNX={use_onnx})")
+
     return {
         "scores": scores_list,
         "indices": indices

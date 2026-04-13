@@ -5,10 +5,13 @@ python-multipart>=0.0.6
 
 # Embedding Models (Python 3.13 호환 버전)
 torch>=2.6.0
-transformers>=4.35.0
+transformers>=4.35.0,<5.0.0
 sentence-transformers>=2.2.2
 huggingface_hub>=0.17.3
 FlagEmbedding>=1.2.0
+onnxruntime>=1.17.0
+onnxscript>=0.6.0
+onnx>=1.16.0
 
 # SSL 경고 해결
 urllib3>=1.26.18
