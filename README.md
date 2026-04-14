@@ -86,6 +86,9 @@ docker run -d \
 # nori 플러그인 설치
 docker exec -it opensearch-node ./bin/opensearch-plugin install analysis-nori
 
+# havana 네트워크에 추가
+docker network connect havana-network opensearch-node
+
 # 이 후 컨테이너 재시작
 docker restart opensearch-node
 
@@ -112,6 +115,9 @@ pip install -r requirements.txt
 # 4. Search Intelligence Service 실행 (백그라운드 실행을 권장합니다)
 # .env 파일에 설정된 EMBEDDING_PORT (기본 8000)로 실행됩니다.
 uvicorn search_intelligence:app --host 0.0.0.0 --port ${EMBEDDING_PORT:-8000}
+
+# 백그라운드에서 실행
+nohup uvicorn search_intelligence:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
 ```
 
 ### 5. Spring Boot 애플리케이션 실행

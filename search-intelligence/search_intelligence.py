@@ -14,8 +14,47 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import onnxruntime as ort
 from onnxruntime.quantization import quantize_dynamic, QuantType
 import time
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 load_dotenv()
+
+# 로그 설정: 일별 로테이션, 30일 보관
+LOG_DIR = os.getenv("LOG_DIR", os.path.join(os.path.dirname(__file__) or ".", "logs"))
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logger = logging.getLogger("search_intelligence")
+logger.setLevel(logging.INFO)
+
+# 파일 핸들러: 매일 자정에 로테이션, 30일 보관
+file_handler = TimedRotatingFileHandler(
+    filename=os.path.join(LOG_DIR, "search_intelligence.log"),
+    when="midnight",
+    interval=1,
+    backupCount=30,
+    encoding="utf-8"
+)
+file_handler.suffix = "%Y-%m-%d"
+file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+))
+
+# 콘솔 핸들러
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+))
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# uvicorn access log도 같은 파일로
+uvicorn_access = logging.getLogger("uvicorn.access")
+uvicorn_access.addHandler(file_handler)
+uvicorn_error = logging.getLogger("uvicorn.error")
+uvicorn_error.addHandler(file_handler)
 
 app = FastAPI()
 
@@ -26,12 +65,12 @@ if torch.cuda.is_available():
 elif torch.backends.mps.is_available():
     device = "mps"
 
-print(f"Using device: {device}")
+logger.info(f"Using device: {device}")
 
 # 0. OCR Model Load (EasyOCR)
 # GPU 사용 여부: device가 cpu가 아니면 True
 use_gpu = (device != "cpu")
-print(f"Loading EasyOCR Model (gpu={use_gpu})...")
+logger.info(f"Loading EasyOCR Model (gpu={use_gpu})...")
 # 한국어('ko'), 영어('en') 지원
 reader = easyocr.Reader(['ko', 'en'], gpu=use_gpu)
 
@@ -49,7 +88,7 @@ else:
 
 def export_reranker_to_onnx(model_name, onnx_path):
     """PyTorch 모델을 ONNX로 수동 변환"""
-    print(f"ONNX 변환 시작: {model_name} -> {onnx_path}")
+    logger.info(f"ONNX 변환 시작: {model_name} -> {onnx_path}")
     pt_model = AutoModelForSequenceClassification.from_pretrained(
         model_name, trust_remote_code=True
     )
@@ -77,7 +116,7 @@ def export_reranker_to_onnx(model_name, onnx_path):
     )
     del pt_model
     gc.collect()
-    print(f"ONNX 변환 완료: {onnx_path}")
+    logger.info(f"ONNX 변환 완료: {onnx_path}")
 
 if use_onnx:
     onnx_dir = os.path.join(os.path.dirname(__file__) or ".", "onnx_models")
@@ -91,15 +130,15 @@ if use_onnx:
 
     # 2) INT8 동적 양자화 (CPU 최적화 핵심)
     if not os.path.exists(onnx_int8_path):
-        print("INT8 양자화 시작...")
+        logger.info("INT8 양자화 시작...")
         quantize_dynamic(
             onnx_fp32_path,
             onnx_int8_path,
             weight_type=QuantType.QInt8,
         )
-        print("INT8 양자화 완료")
+        logger.info("INT8 양자화 완료")
 
-    print(f"Loading Reranker Model (ONNX INT8): {onnx_int8_path}")
+    logger.info(f"Loading Reranker Model (ONNX INT8): {onnx_int8_path}")
     reranker_tokenizer = AutoTokenizer.from_pretrained(reranker_model_name, trust_remote_code=True)
 
     # ONNX Runtime 세션 최적화
@@ -110,9 +149,9 @@ if use_onnx:
 
     reranker_session = ort.InferenceSession(onnx_int8_path, sess_options, providers=["CPUExecutionProvider"])
     reranker = None
-    print("ONNX INT8 Reranker 로드 완료")
+    logger.info("ONNX INT8 Reranker 로드 완료")
 else:
-    print(f"Loading Reranker Model (FlagReranker): {reranker_model_name}")
+    logger.info(f"Loading Reranker Model (FlagReranker): {reranker_model_name}")
     use_fp16 = (device == "cuda")
     reranker = FlagReranker(
         reranker_model_name,
@@ -161,7 +200,7 @@ async def embed_texts(request: TextsRequest):
             torch.cuda.empty_cache()
     
     elapsed = time.time() - start_time
-    print(f"[Batch] {len(request.texts)}건 처리 소요 시간: {elapsed:.4f}초")
+    logger.info(f"[Batch] {len(request.texts)}건 처리 소요 시간: {elapsed:.4f}초")
     
     return {"embeddings": embeddings}
 
@@ -218,7 +257,7 @@ async def rerank_documents(request: RerankRequest):
     scores_list = [float(s) for s in scores]
 
     elapsed = time.time() - start_time
-    print(f"[Rerank] {len(request.documents)}건 리랭킹 소요 시간: {elapsed:.4f}초 (ONNX={use_onnx})")
+    logger.info(f"[Rerank] {len(request.documents)}건 리랭킹 소요 시간: {elapsed:.4f}초 (ONNX={use_onnx})")
 
     return {
         "scores": scores_list,
@@ -240,7 +279,7 @@ async def ocr_image(file: UploadFile = File(...)):
             try:
                 # PDF를 이미지 리스트로 변환 (기본 200dpi)
                 images = convert_from_bytes(contents)
-                print(f"PDF 변환됨: {len(images)} 페이지")
+                logger.info(f"PDF 변환됨: {len(images)} 페이지")
                 
                 for i, image in enumerate(images):
                     # PIL Image -> NumPy array (OpenCV format)
@@ -250,10 +289,10 @@ async def ocr_image(file: UploadFile = File(...)):
                     result = reader.readtext(img_np, detail=0, paragraph=True)
                     page_text = "\n".join(result)
                     extracted_texts.append(page_text)
-                    print(f" - {i+1}페이지 OCR 완료")
+                    logger.info(f" - {i+1}페이지 OCR 완료")
                     
             except Exception as e:
-                print(f"PDF 처리 실패 (poppler가 설치되었는지 확인하세요): {e}")
+                logger.error(f"PDF 처리 실패 (poppler가 설치되었는지 확인하세요): {e}")
                 raise HTTPException(status_code=500, detail=f"PDF 처리 실패: {str(e)}")
 
         # 2. 일반 이미지 처리
@@ -275,5 +314,5 @@ async def ocr_image(file: UploadFile = File(...)):
         return {"text": full_text}
         
     except Exception as e:
-        print(f"OCR 처리 중 오류 발생: {str(e)}")
+        logger.error(f"OCR 처리 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=f"OCR 처리 실패: {str(e)}")
