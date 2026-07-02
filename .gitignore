@@ -59,3 +59,6 @@ docker-compose.override.yml
 .claude/
 .serena/
 
+# ONNX models (auto-generated at runtime)
+search-intelligence/onnx_models/
+
