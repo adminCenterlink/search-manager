@@ -53,6 +53,7 @@ venv/
 
 # Docker
 docker-compose.override.yml
+*.tar
 
 # Security & Local Config
 .env

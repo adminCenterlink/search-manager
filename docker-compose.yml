@@ -33,6 +33,7 @@ services:
       - "${UPLOAD_PATH}/search:/usr/share/opensearch/data"
     networks:
       - search-net
+      - default
 
   # 2. Search Intelligence (Python)
   search-intelligence:
@@ -53,6 +54,7 @@ services:
       - ${UPLOAD_PATH}/embedding-model:/root/.cache/huggingface
     networks:
       - search-net
+      - default
 
   # 3. Search Manager (Spring Boot)
   search-manager:
@@ -80,6 +82,7 @@ services:
       - "${UPLOAD_PATH}:/app/upload" # 호스트의 UPLOAD_PATH를 컨테이너의 /app/upload로 마운트
     networks:
       - search-net
+      - default
 
 volumes:
   opensearch-data:
@@ -87,5 +90,7 @@ volumes:
 
 networks:
   search-net:
-    name: havana-network
+    name: shared_net
     external: true
+  default:
+    driver: bridge
