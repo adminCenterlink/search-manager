@@ -70,9 +70,10 @@ opensearch:
   socket-timeout: 60000
 
 # 로깅 파일 설정 (logback-spring.xml에서 참조)
+# 파일 인덱싱 경로(UPLOAD_PATH)와 분리한다. UPLOAD_PATH가 원격 NFS여도 로그는 로컬에 남긴다.
 logging:
   file:
-    path: '${UPLOAD_PATH:/app/upload}'
+    path: '${LOG_PATH:/app/logs}'
 
 # Search Intelligence(임베딩, 리랭킹, OCR) 설정
 search-intelligence:
