@@ -25,7 +25,7 @@
                 <onMismatch>DENY</onMismatch>
             </filter>
             <!-- 현재 로그 파일 -->
-            <file>${LOG_HOME}/logs/${LOG_FILE_NAME}/${LOG_FILE_NAME}-${LOG_PORT}.log</file>
+            <file>${LOG_HOME}/${LOG_FILE_NAME}/${LOG_FILE_NAME}-${LOG_PORT}.log</file>
             <encoder>
                 <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
                 <charset>UTF-8</charset>
@@ -34,7 +34,7 @@
             <!-- 일자별 + 크기별 로테이션 정책 -->
             <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
                 <!-- 아카이브 파일 이름 패턴: search-manager-8080.2023-11.0.gz -->
-                <fileNamePattern>${LOG_HOME}/logs/${LOG_FILE_NAME}/${LOG_FILE_NAME}-${LOG_PORT}.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
+                <fileNamePattern>${LOG_HOME}/${LOG_FILE_NAME}/${LOG_FILE_NAME}-${LOG_PORT}.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
                 <maxHistory>30</maxHistory>       <!-- 30일 보관 -->
                 <maxFileSize>10MB</maxFileSize>   <!-- 파일당 최대 10MB -->
                 <totalSizeCap>500MB</totalSizeCap> <!-- 전체 로그 최대 500MB -->
@@ -45,13 +45,13 @@
             <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
                 <level>warn</level> <!-- WARN 이상만 기록 -->
             </filter>
-            <file>${LOG_HOME}/logs/${LOG_FILE_NAME}/errors/${LOG_FILE_NAME}-${LOG_PORT}.error.log</file>
+            <file>${LOG_HOME}/${LOG_FILE_NAME}/errors/${LOG_FILE_NAME}-${LOG_PORT}.error.log</file>
             <encoder>
                 <pattern>%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n</pattern>
                 <charset>UTF-8</charset>
             </encoder>
             <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-                <fileNamePattern>${LOG_HOME}/logs/${LOG_FILE_NAME}/errors/${LOG_FILE_NAME}-${LOG_PORT}.error.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
+                <fileNamePattern>${LOG_HOME}/${LOG_FILE_NAME}/errors/${LOG_FILE_NAME}-${LOG_PORT}.error.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
                 <maxHistory>30</maxHistory>
                 <maxFileSize>10MB</maxFileSize>
                 <totalSizeCap>100MB</totalSizeCap>

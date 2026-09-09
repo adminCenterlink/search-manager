@@ -1,68 +1,13 @@
-version: '3.8'
-
 services:
-  # 1. OpenSearch (DB)
-  opensearch-node:
-    build:
-      context: ./opensearch
-#      platforms:
-#        - linux/amd64
-#        - linux/arm64
-    container_name: opensearch-node
-    env_file: .env
-    environment:
-      - TZ=Asia/Seoul
-      - cluster.name=opensearch-cluster
-      - node.name=opensearch-node
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-      - "DISABLE_INSTALL_DEMO_CONFIG=true"
-      - "DISABLE_SECURITY_PLUGIN=true"
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-    ports:
-      - "${OPEN_SEARCH_PORT_1}:9200"
-      - "${OPEN_SEARCH_PORT_2}:9600"
-    volumes:
-      - "${UPLOAD_PATH}/search:/usr/share/opensearch/data"
-    networks:
-      - search-net
-      - default
-
-  # 2. Search Intelligence (Python)
-  search-intelligence:
-    build:
-      context: ./search-intelligence
-      dockerfile: Dockerfile
-#      platforms:
-#        - linux/amd64
-#        - linux/arm64
-    container_name: search-intelligence
-    env_file: .env
-    ports:
-      - "${EMBEDDING_PORT}:8000"
-    environment:
-      - TZ=Asia/Seoul
-      - HF_HOME=/root/.cache/huggingface
-    volumes:
-      - ${UPLOAD_PATH}/embedding-model:/root/.cache/huggingface
-    networks:
-      - search-net
-      - default
-
-  # 3. Search Manager (Spring Boot)
+  # Search Manager (Spring Boot)
+  # opensearch(host 9200)와 contact-intelligence(host 8180)는 모두 host에 떠 있으므로
+  # host.docker.internal로 접근한다. 두 서비스는 compose 밖에서 별도로 관리한다.
   search-manager:
     build:
       context: .
       dockerfile: Dockerfile
-#      platforms:
-#        - linux/amd64
+      platforms:
+        - linux/amd64
 #        - linux/arm64
     container_name: search-manager
     env_file: .env
@@ -70,27 +15,14 @@ services:
       - "${SERVER_PORT}:80"
     environment:
       - TZ=Asia/Seoul
-      # Override hosts for container networking
-      - OPEN_SEARCH_HOST=opensearch-node
-      - SEARCH_INTELLIGENCE_HOST=http://search-intelligence
-      - UPLOAD_PATH=/app/upload # 컨테이너 내부에서 사용될 UPLOAD_PATH
+      # 외부 의존성은 host.docker.internal로 접근
+      - OPEN_SEARCH_HOST=host.docker.internal
+      - SEARCH_INTELLIGENCE_HOST=http://host.docker.internal
+      - UPLOAD_PATH=/app/upload # 파일 인덱싱 대상(NFS 마운트 지점) — 컨테이너 내부 경로
+      - LOG_PATH=/app/logs # 로그 경로 — 파일 경로와 분리(로컬)
       - SEARCH_INDEXES_FILE_LOCAL_PATH_PREFIX=/Users/centerlink/app/upload # localPathPrefix 명시적 설정
-    depends_on:
-      - opensearch-node
-      - search-intelligence
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # 컨테이너에서 host의 opensearch(9200)/contact-intelligence(8180) 접근
     volumes:
-      - "${UPLOAD_PATH}:/app/upload" # 호스트의 UPLOAD_PATH를 컨테이너의 /app/upload로 마운트
-    networks:
-      - search-net
-      - default
-
-volumes:
-  opensearch-data:
-  huggingface-cache:
-
-networks:
-  search-net:
-    name: shared_net
-    external: true
-  default:
-    driver: bridge
+      - "${UPLOAD_PATH}:/app/upload" # host의 UPLOAD_PATH(파일, NFS 마운트 지점)를 컨테이너 /app/upload로
+      - "${LOG_PATH}:/app/logs" # host의 LOG_PATH(로그)를 컨테이너 /app/logs로

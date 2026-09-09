@@ -54,7 +54,7 @@ public class SearchIntelligenceClient {
                    .filename(filename); // 보정된 파일명 설정
 
             Map<String, Object> response = webClient.post()
-                    .uri("/ocr")
+                    .uri("/search/ocr")
                     .contentType(MediaType.MULTIPART_FORM_DATA)
                     .body(BodyInserters.fromMultipartData(builder.build()))
                     .retrieve()
@@ -91,7 +91,7 @@ public class SearchIntelligenceClient {
             log.debug("임베딩 요청: {}", text);
 
             Map<String, Object> response = webClient.post()
-                    .uri("/embed")
+                    .uri("/search/embed")
                     .bodyValue(request)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -139,7 +139,7 @@ public class SearchIntelligenceClient {
             log.debug("배치 임베딩 요청: {} 개 문서", texts.size());
 
             Map<String, Object> response = webClient.post()
-                    .uri("/embed/batch")
+                    .uri("/search/embed/batch")
                     .bodyValue(request)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -192,7 +192,7 @@ public class SearchIntelligenceClient {
             log.debug("리랭킹 요청: query={}, docs={}", query, documents.size());
 
             Map<String, Object> response = webClient.post()
-                    .uri("/rerank")
+                    .uri("/search/rerank")
                     .bodyValue(request)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -215,7 +215,7 @@ public class SearchIntelligenceClient {
     public boolean isAvailable() {
         try {
             webClient.get()
-                    .uri("/docs")
+                    .uri("/health")
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();

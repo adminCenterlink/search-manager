@@ -71,7 +71,11 @@ docker run -d \
 # 3.3.2 버전 풀
 docker pull opensearchproject/opensearch:3.3.2
 
-# 컨테이너를 실행
+# 1. 색인 디렉토리 생성 및 소유권 부여 (opensearch 컨테이너는 내부 uid 1000으로 실행)
+sudo mkdir -p /home/centerlink/upload/search
+sudo chown -R 1000:1000 /home/centerlink/upload/search
+
+# 2. 컨테이너 실행 (색인 볼륨 마운트)
 docker run -d \
   --name opensearch-node \
   -p ${OPEN_SEARCH_PORT_1:-9200}:9200 \
@@ -81,15 +85,11 @@ docker run -d \
   -e "node.name=opensearch-node" \
   -e "DISABLE_SECURITY_PLUGIN=true" \
   -e "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m" \
+  -v /home/centerlink/upload/search:/usr/share/opensearch/data \
   opensearchproject/opensearch:3.3.2
 
-# nori 플러그인 설치
-docker exec -it opensearch-node ./bin/opensearch-plugin install analysis-nori
-
-# havana 네트워크에 추가
-docker network connect havana-network opensearch-node
-
-# 이 후 컨테이너 재시작
+# 3. nori 플러그인 설치 후 재시작
+docker exec opensearch-node ./bin/opensearch-plugin install --batch analysis-nori
 docker restart opensearch-node
 
 # 평소에 opensearch 시작

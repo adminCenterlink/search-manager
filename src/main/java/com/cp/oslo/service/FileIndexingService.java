@@ -37,7 +37,8 @@ public class FileIndexingService {
     private final SearchIndexProperties searchIndexProperties;
     private final JdbcTemplate jdbcTemplate; // JdbcTemplate 주입 // SearchIndexProperties 주입
 
-    @Value("${logging.file.path:/app/upload}")
+    // 파일 읽기 뿌리는 로그 경로와 분리한다(파일은 NFS 마운트, 로그는 로컬).
+    @Value("${UPLOAD_PATH:/app/upload}")
     private String containerUploadPath;
 
     @Value("${search.indexes.file.ocr-enabled:false}")
