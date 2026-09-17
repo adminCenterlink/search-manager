@@ -98,7 +98,39 @@ public class IndexRegistry {
                         field("DATA_TYPE", FieldType.KEYWORD),
                         field("UUID", FieldType.KEYWORD),
                         field("TITLE", FieldType.TEXT, "nori"),
-                        field("CONTENTS", FieldType.TEXT, "nori")
+                        field("CONTENTS", FieldType.TEXT, "nori"),
+                        // WIKI 타입 전용(다른 타입은 비움). UVW_SEARCH에 없는 컬럼이라 매핑만 정의한다.
+                        mapped("ITEM_NO", FieldType.INTEGER),
+                        mapped("CAT_ID", FieldType.INTEGER),
+                        mapped("DOC_TITLE", FieldType.TEXT, "nori")
+                ))
+                .build());
+
+        // 5-1. Wiki 인덱스 정의 — tb_wiki_item 1행 = 문서 1건(항목 단위 원자 색인).
+        // 원본은 contact-intelligence store DB(WikiDataSource)라 조회 SQL은 IndexingService가 직접 쓴다.
+        // TITLE=topic(소절 제목), CONTENTS=item_text — 기존 hybrid/rerank 경로가 이 두 이름을 하드코딩한다.
+        definitions.put("wiki", IndexDefinition.builder()
+                .indexName("wiki")
+                .sourceTableName("tb_wiki_item")
+                .description("LLM 위키 항목")
+                .idColumn("ITEM_ID")
+                .fields(List.of(
+                        mapped("ITEM_ID", FieldType.KEYWORD),        // doc_uuid:item_no
+                        mapped("DOC_UUID", FieldType.KEYWORD),       // =상담분류 CAT_UUID
+                        mapped("CAT_ID", FieldType.INTEGER),
+                        mapped("ITEM_NO", FieldType.INTEGER),
+                        mapped("CHAPTER_NO", FieldType.INTEGER),
+                        mapped("SECTION_KEY", FieldType.KEYWORD),
+                        mapped("EVIDENCE_KEY", FieldType.KEYWORD),   // 재생성을 가로지르는 항목 앵커
+                        mapped("MANUAL_UUID", FieldType.KEYWORD),
+                        mapped("MANUAL_LABEL", FieldType.KEYWORD),
+                        mapped("TITLE", FieldType.TEXT, "nori"),
+                        mapped("CONTENTS", FieldType.TEXT, "nori"),
+                        mapped("DOC_TITLE", FieldType.TEXT, "nori"),
+                        mapped("CHAPTER_LABEL", FieldType.TEXT, "nori"),
+                        mapped("FULL_CAT_NM", FieldType.TEXT, "nori"),
+                        mapped("GEN_NO", FieldType.INTEGER),
+                        mapped("GEN_DT", FieldType.DATE)
                 ))
                 .build());
 
@@ -158,5 +190,14 @@ public class IndexRegistry {
 
     private FieldDefinition field(String source, FieldType type, String analyzer) {
         return FieldDefinition.builder().sourceColumn(source).type(type).indexed(true).analyzer(analyzer).build();
+    }
+
+    // 매핑 전용 필드 — 원본 컬럼이 없어 범용 SELECT 경로가 건너뛴다(sourceColumn=null)
+    private FieldDefinition mapped(String target, FieldType type) {
+        return FieldDefinition.builder().targetField(target).type(type).indexed(true).build();
+    }
+
+    private FieldDefinition mapped(String target, FieldType type, String analyzer) {
+        return FieldDefinition.builder().targetField(target).type(type).indexed(true).analyzer(analyzer).build();
     }
 }

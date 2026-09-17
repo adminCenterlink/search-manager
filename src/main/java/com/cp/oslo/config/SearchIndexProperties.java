@@ -33,5 +33,6 @@ public class SearchIndexProperties {
         private Integer defaultSearchSize; // 추가: 기본 검색 결과 크기
         private boolean ocrEnabled; // OCR 활성화 여부
         private List<String> targetSrcIds; // 인덱싱 대상 SRC_ID 목록
+        private String cron; // 전용 스케줄(설정 시 전역 동기화에서 제외)
     }
 }

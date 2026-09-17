@@ -341,6 +341,8 @@ public class OpenSearchService {
                 targetFields = List.of("DOC_NM", "CONTENTS");
             } else if ("unified".equals(indexName)) {
                 targetFields = List.of("TITLE", "CONTENTS");
+            } else if ("wiki".equals(indexName)) {
+                targetFields = List.of("TITLE", "CONTENTS", "DOC_TITLE", "CHAPTER_LABEL", "FULL_CAT_NM");
             } else { 
                 targetFields = List.of("TITLE", "CONTENTS");
             }    

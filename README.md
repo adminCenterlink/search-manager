@@ -266,6 +266,30 @@ curl "http://localhost:9400/api/v1/search/products?query=노트북"
 curl -X DELETE http://localhost:9400/api/v1/indexes/1
 ```
 
+## LLM 위키 인덱스 (wiki)
+
+contact-intelligence의 wiki 파이프라인 산출물(`tb_wiki_item`)을 **항목 단위**로 색인합니다. 항목 1행이 OpenSearch 문서 1건입니다.
+
+- 원본: contact-intelligence store DB. `.env`의 `WIKI_DB_URL`, `WIKI_DB_USERNAME`, `WIKI_DB_PASS`로 별도 접속합니다. `WIKI_DB_URL`이 비어 있으면 wiki 색인을 건너뜁니다.
+- 스케줄: `WIKI_SYNC_CRON`(기본 매일 05:00). wiki 재생성(contact-intelligence, 03시) 이후로 둡니다. 전역 동기화(01시)에서는 제외됩니다.
+- 동기화 방식: 항상 삭제 후 전량 재생성입니다. 단건 동기화는 지원하지 않습니다.
+- 필드: `TITLE`(=topic), `CONTENTS`(=item_text), `DOC_UUID`(=상담분류 CAT_UUID), `CAT_ID`, `ITEM_NO`, `CHAPTER_NO`, `CHAPTER_LABEL`, `SECTION_KEY`, `DOC_TITLE`, `FULL_CAT_NM`, `MANUAL_UUID`, `MANUAL_LABEL`, `EVIDENCE_KEY`, `GEN_NO`, `GEN_DT`, `embedding`
+- 통합검색(unified) 편입: `TB_CONFIG`에 `System.SearchEngine.Collection.Wiki = Y`를 넣으면 `DATA_TYPE=WIKI`로 함께 색인됩니다. 결과의 `uuid`는 문서(`doc_uuid`)이고 `itemNo`, `catId`, `docTitle`이 별도 필드로 실립니다.
+
+```bash
+# 상태 확인
+curl http://localhost:9400/api/v1/wiki-index/info
+
+# 동기화(삭제 후 재생성)
+curl -X POST http://localhost:9400/api/v1/wiki-index/sync
+
+# 검색 (하이브리드 + 리랭킹)
+curl "http://localhost:9400/api/v1/search/hybrid/wiki?query=여권%20재발급%20구비서류"
+
+# 텍스트 검색
+curl "http://localhost:9400/api/v1/search/wiki?query=여권"
+```
+
 ## 한국어 검색 설정
 
 한국어 형태소 분석을 위해서는 OpenSearch의 `analysis-nori` 플러그인을 사용합니다.

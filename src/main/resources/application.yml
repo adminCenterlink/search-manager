@@ -51,6 +51,11 @@ search:
       enabled: true
       auto-sync: false
       sync-interval-minutes: 60
+    wiki:
+      enabled: true
+      auto-sync: false
+      sync-interval-minutes: 60
+      cron: '${WIKI_SYNC_CRON:0 0 5 * * *}'  # 전용 스케줄(전역 동기화에서 제외). wiki 재생성(03시) 이후
     file:
       enabled: true
       auto-sync: false
@@ -58,6 +63,14 @@ search:
       local-path-prefix: "${UPLOAD_PATH}" # DB에 저장된 절대경로의 접두어
       ocr-enabled: true
       target-src-ids: CALL,MANUAL,NOTICE # 인덱싱 대상 SRC_ID1 목록 MANUAL_EDITOR,NOTICE_EDITOR 제외
+
+# wiki 인덱스 원본(contact-intelligence store DB). url이 비어 있으면 wiki 색인을 건너뛴다.
+wiki:
+  datasource:
+    url: '${WIKI_DB_URL:}'
+    username: '${WIKI_DB_USERNAME:}'
+    password: '${WIKI_DB_PASS:}'
+    driver-class-name: '${DB_DRIVER:org.mariadb.jdbc.Driver}'
 
 # OpenSearch 설정
 opensearch:
@@ -106,6 +119,11 @@ search-intelligence:
       space-type: cosinesimil
     unified:
       source-field: TITLE,CONTENTS
+      target-field: embedding
+      engine: lucene
+      space-type: cosinesimil
+    wiki:
+      source-field: DOC_TITLE,TITLE,CONTENTS  # 항목 본문만으로는 문맥이 빠져 문서 제목·소절 제목을 앞에 붙인다
       target-field: embedding
       engine: lucene
       space-type: cosinesimil

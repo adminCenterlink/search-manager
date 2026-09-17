@@ -4,6 +4,7 @@ import com.cp.oslo.client.SearchIntelligenceClient;
 import com.cp.oslo.config.IndexRegistry;
 import com.cp.oslo.config.SearchIndexProperties;
 import com.cp.oslo.config.VectorFieldConfig;
+import com.cp.oslo.config.WikiDataSource;
 import com.cp.oslo.domain.IndexState;
 import com.cp.oslo.domain.SyncHistory;
 import com.cp.oslo.model.FieldDefinition;
@@ -39,8 +40,20 @@ public class IndexingService {
     private final SearchIntelligenceClient searchIntelligenceClient;
     private final VectorFieldConfig vectorFieldConfig;
     private final FileIndexingService fileIndexingService;
+    private final WikiDataSource wikiDataSource;
 
     private static final int BATCH_SIZE = 500;
+
+    // 전량 재생성(삭제 후 재색인)하는 인덱스 — 원본이 행 단위 갱신 추적을 못 하는 것들
+    private static final Set<String> HARD_RESET_INDEXES = Set.of("unified", "wiki");
+
+    /** keyset paging 원본 — 마지막 행을 커서로 받아 다음 배치를 돌려준다. */
+    @FunctionalInterface
+    private interface BatchSource {
+        List<Map<String, Object>> fetch(Map<String, Object> lastRow, int limit);
+    }
+
+    private record NamedSource(String name, BatchSource source) {}
 
     /**
      * 전체 동기화 실행 (인덱스 이름으로)
@@ -57,7 +70,13 @@ public class IndexingService {
             return syncFileIndex();
         }
 
-        // 3. 인덱스 정의 조회 (코드 기반)
+        // 3. wiki 인덱스는 store DB 접속이 없으면 건너뜀
+        if ("wiki".equals(indexName) && !wikiDataSource.isAvailable()) {
+            log.warn("wiki 인덱스 동기화 건너뜀: wiki.datasource.url이 설정되지 않았습니다.");
+            return null;
+        }
+
+        // 4. 인덱스 정의 조회 (코드 기반)
         IndexDefinition definition = indexRegistry.get(indexName);
         if (definition == null) {
             throw new IllegalArgumentException("알 수 없는 인덱스입니다: " + indexName);
@@ -123,9 +142,9 @@ public class IndexingService {
             // 인덱스가 없으면 생성
             boolean isNewIndex = false;
             
-            // unified 인덱스의 경우 항상 삭제 후 재생성 (Hard Reset)하여 Clean 상태 유지
-            if ("unified".equals(definition.getIndexName()) && openSearchService.indexExists(definition.getIndexName())) {
-                log.info("unified 인덱스 초기화(삭제 후 재생성) 진행...");
+            // unified/wiki 인덱스는 항상 삭제 후 재생성 (Hard Reset)하여 Clean 상태 유지
+            if (HARD_RESET_INDEXES.contains(definition.getIndexName()) && openSearchService.indexExists(definition.getIndexName())) {
+                log.info("{} 인덱스 초기화(삭제 후 재생성) 진행...", definition.getIndexName());
                 openSearchService.deleteIndex(definition.getIndexName());
             }
 
@@ -135,16 +154,18 @@ public class IndexingService {
                 isNewIndex = true;
             }
 
-            if ("unified".equals(definition.getIndexName())) {
-                List<String> enabledTypes = fetchEnabledDataTypes();
-                if (enabledTypes.isEmpty()) {
-                    log.info("모든 데이터 타입이 비활성화되어, 동기화를 중단합니다.");
+            if (HARD_RESET_INDEXES.contains(definition.getIndexName())) {
+                List<NamedSource> sources = "wiki".equals(definition.getIndexName())
+                        ? List.of(new NamedSource("WIKI", this::fetchWikiBatch))
+                        : resolveUnifiedSources();
+                if (sources.isEmpty()) {
+                    log.info("동기화할 원본이 없어 중단합니다: {}", definition.getIndexName());
                     return history; // 빈 상태로 종료
                 }
-                
+
                 // Hard Reset 전략을 사용하므로 deleteDocumentsNotInTypes 호출 불필요
                 // (항상 새 인덱스이므로 비활성 데이터가 존재할 수 없음)
-                log.info("활성화된 타입에 대해 동기화를 시작합니다. (타입: {})", enabledTypes);
+                log.info("원본별 동기화를 시작합니다. (원본: {})", sources.stream().map(NamedSource::name).toList());
 
                 long totalProcessed = 0;
                 long successCount = 0;
@@ -152,24 +173,24 @@ public class IndexingService {
 
                 log.info("데이터 조회 및 인덱싱 시작 (Batch Size: {})", BATCH_SIZE);
 
-                for (String dataType : enabledTypes) {
-                    String lastId = null; // 각 데이터 타입별로 마지막 ID 추적
+                for (NamedSource named : sources) {
+                    Map<String, Object> lastRow = null; // 원본별 keyset 커서(마지막 행)
                     long typeProcessed = 0;
-                    log.info("----> 데이터 타입 동기화 시작: {}", dataType);
+                    log.info("----> 원본 동기화 시작: {}", named.name());
 
                     while (true) {
                         long loopStart = System.currentTimeMillis();
 
                         // 1. 배치 데이터 조회
-                        List<Map<String, Object>> batch = fetchUnifiedBatchFromDatabase(dataType, lastId, BATCH_SIZE);
+                        List<Map<String, Object>> batch = named.source().fetch(lastRow, BATCH_SIZE);
                         long afterFetch = System.currentTimeMillis();
 
                         if (batch.isEmpty()) {
                             break;
                         }
 
-                        // 다음 배치를 위한 lastId 업데이트
-                        lastId = (String) batch.get(batch.size() - 1).get("UUID");
+                        // 다음 배치를 위한 커서 갱신 (임베딩 단계가 행을 제거할 수 있어 여기서 잡는다)
+                        lastRow = new HashMap<>(batch.get(batch.size() - 1));
 
                         // 2. 임베딩 생성
                         enrichDocumentsWithEmbedding(definition.getIndexName(), batch);
@@ -193,10 +214,10 @@ public class IndexingService {
                                 (afterIndex - afterEmbedding),
                                 (afterIndex - loopStart));
 
-                        log.info("진행 중... 처리: {}건 (현재 타입: {} | 총: {}건 | 성공: {} | 실패: {})",
-                                typeProcessed, dataType, totalProcessed, successCount, failCount);
+                        log.info("진행 중... 처리: {}건 (현재 원본: {} | 총: {}건 | 성공: {} | 실패: {})",
+                                typeProcessed, named.name(), totalProcessed, successCount, failCount);
                     }
-                    log.info("<---- 데이터 타입 동기화 완료: {} (총 {}건)", dataType, typeProcessed);
+                    log.info("<---- 원본 동기화 완료: {} (총 {}건)", named.name(), typeProcessed);
                 }
 
                 // 동기화 완료 처리
@@ -217,7 +238,7 @@ public class IndexingService {
                         totalProcessed, successCount, failCount, status);
                 log.info("========================================");
 
-            } else { // unified 인덱스가 아닌 경우 기존 로직 유지
+            } else { // 그 외 인덱스는 기존 OFFSET 방식 유지
                 long totalProcessed = 0;
                 long successCount = 0;
                 long failCount = 0;
@@ -316,6 +337,7 @@ public class IndexingService {
 
             String selectColumns = fields.stream()
                     .map(FieldDefinition::getSourceColumn)
+                    .filter(Objects::nonNull) // 매핑 전용 필드 제외
                     .collect(Collectors.joining(", "));
             
             // 정렬 기준 컬럼 (ID 컬럼 우선)
@@ -356,6 +378,7 @@ public class IndexingService {
             List<Map<String, Object>> documents = jdbcTemplate.query(sql, (rs, rowNum) -> {
                 Map<String, Object> document = new HashMap<>();
                 for (FieldDefinition field : fields) {
+                    if (field.getSourceColumn() == null) continue;
                     Object value = rs.getObject(field.getSourceColumn());
                     if (value != null) {
                         document.put(field.getEffectiveFieldName(), value);
@@ -367,7 +390,7 @@ public class IndexingService {
             // 문서 ID (_id) 설정
             final String targetIdColumn = idColumn; // lambda용 final 변수
             FieldDefinition idField = fields.stream()
-                    .filter(f -> f.getSourceColumn().equalsIgnoreCase(targetIdColumn))
+                    .filter(f -> targetIdColumn.equalsIgnoreCase(f.getSourceColumn()))
                     .findFirst()
                     .orElse(null);
             
@@ -423,6 +446,11 @@ public class IndexingService {
         if ("file".equalsIgnoreCase(indexName)) {
             fileIndexingService.indexFileByUuid(uuid);
             return;
+        }
+
+        // wiki는 야간 전량 재생성만 지원(item_no가 재생성마다 재부여되어 단건 갱신 기준이 없음)
+        if ("wiki".equals(indexName)) {
+            throw new UnsupportedOperationException("wiki 인덱스는 단건 동기화를 지원하지 않습니다. /api/v1/wiki-index/sync 를 사용하세요.");
         }
 
         IndexDefinition definition = indexRegistry.get(indexName);
@@ -498,6 +526,7 @@ public class IndexingService {
         
         String selectColumns = definition.getFields().stream()
                 .map(FieldDefinition::getSourceColumn)
+                .filter(Objects::nonNull) // 매핑 전용 필드 제외
                 .collect(Collectors.joining(", "));
         
         String sql = String.format("SELECT %s FROM %s WHERE %s = ?", 
@@ -507,6 +536,7 @@ public class IndexingService {
             List<Map<String, Object>> results = jdbcTemplate.query(sql, (rs, rowNum) -> {
                 Map<String, Object> doc = new HashMap<>();
                 for (FieldDefinition f : definition.getFields()) {
+                    if (f.getSourceColumn() == null) continue;
                     Object val = rs.getObject(f.getSourceColumn());
                     if (val != null) {
                         doc.put(f.getEffectiveFieldName(), val);
@@ -522,37 +552,57 @@ public class IndexingService {
     }
 
     /**
-     * unified 인덱스를 위해 데이터 타입별로 배치 데이터 조회 (Keyset Paging)
-     * DATA_TYPE, UUID, TITLE, CONTENTS 필드만 추출
+     * unified 인덱스의 원본 목록 — TB_CONFIG에서 활성화된 타입만. WIKI는 store DB 접속이 있을 때만 포함.
      */
-    private List<Map<String, Object>> fetchUnifiedBatchFromDatabase(String dataType, String lastId, int limit) {
-        String sourceTable = getTableNameForDataType(dataType);
-        String idColumn = getIdColumnForDataType(dataType);
-        String titleColumn = getTitleColumnForDataType(dataType);
-        String contentsColumn = getContentsColumnForDataType(dataType);
-
-        if (sourceTable == null || idColumn == null || titleColumn == null || contentsColumn == null) {
-            log.warn("Unified 인덱스 '{}({})'의 필드 매핑이 정의되지 않았습니다. 동기화를 건너뜀.", dataType, sourceTable);
+    private List<NamedSource> resolveUnifiedSources() {
+        List<String> enabledTypes = fetchEnabledDataTypes();
+        if (enabledTypes.isEmpty()) {
+            log.info("모든 데이터 타입이 비활성화되어 있습니다(TB_CONFIG).");
             return Collections.emptyList();
         }
+        List<NamedSource> sources = new ArrayList<>();
+        for (String dataType : enabledTypes) {
+            switch (dataType) {
+                case "CALL" -> sources.add(new NamedSource(dataType,
+                        (last, limit) -> fetchUnifiedBatch(dataType, "uvw_call", "CALL_UUID", "QUESTION", "ANSWER", last, limit)));
+                case "MANUAL" -> sources.add(new NamedSource(dataType,
+                        (last, limit) -> fetchUnifiedBatch(dataType, "uvw_manual", "MANUAL_UUID", "TITLE", "CONTENTS", last, limit)));
+                case "NOTICE" -> sources.add(new NamedSource(dataType,
+                        (last, limit) -> fetchUnifiedBatch(dataType, "uvw_doc_notice", "DOC_UUID", "DOC_NM", "CONTENTS", last, limit)));
+                case "WIKI" -> {
+                    if (wikiDataSource.isAvailable()) {
+                        sources.add(new NamedSource(dataType, this::fetchUnifiedWikiBatch));
+                    } else {
+                        log.warn("unified WIKI 타입 건너뜀: wiki.datasource.url이 설정되지 않았습니다.");
+                    }
+                }
+                default -> log.warn("unified 인덱스에 정의되지 않은 데이터 타입입니다. 건너뜀: {}", dataType);
+            }
+        }
+        return sources;
+    }
 
+    /**
+     * unified 인덱스용 단일 뷰 배치 조회 (Keyset Paging, UUID 단일 커서)
+     * DATA_TYPE, UUID, TITLE, CONTENTS 필드만 추출
+     */
+    private List<Map<String, Object>> fetchUnifiedBatch(String dataType, String sourceTable, String idColumn,
+                                                        String titleColumn, String contentsColumn,
+                                                        Map<String, Object> lastRow, int limit) {
         StringBuilder sqlBuilder = new StringBuilder();
         sqlBuilder.append(String.format("SELECT '%s' AS DATA_TYPE, %s AS UUID, %s AS TITLE, %s AS CONTENTS FROM %s",
                 dataType, idColumn, titleColumn, contentsColumn, sourceTable));
 
         List<Object> params = new ArrayList<>();
-
-        if (lastId != null && !lastId.isEmpty()) {
+        if (lastRow != null) {
             sqlBuilder.append(String.format(" WHERE %s > ?", idColumn));
-            params.add(lastId);
+            params.add(lastRow.get("UUID"));
         }
         sqlBuilder.append(String.format(" ORDER BY %s ASC LIMIT ?", idColumn));
         params.add(limit);
 
-        String sql = sqlBuilder.toString();
-        
         try {
-            return jdbcTemplate.query(sql, (rs, rowNum) -> {
+            return jdbcTemplate.query(sqlBuilder.toString(), (rs, rowNum) -> {
                 Map<String, Object> document = new HashMap<>();
                 document.put("DATA_TYPE", rs.getString("DATA_TYPE"));
                 document.put("UUID", rs.getString("UUID"));
@@ -562,44 +612,101 @@ public class IndexingService {
                 return document;
             }, params.toArray());
         } catch (Exception e) {
-            log.error("Unified 인덱스 '{}' 데이터 조회 실패 (lastId: {}): {}", dataType, lastId, e.getMessage(), e);
+            log.error("Unified 인덱스 '{}' 데이터 조회 실패 (lastRow: {}): {}", dataType, lastRow, e.getMessage(), e);
             throw new RuntimeException("Unified 인덱스 데이터 조회 실패", e);
         }
     }
 
-    private String getTableNameForDataType(String dataType) {
-        return switch (dataType) {
-            case "CALL" -> "uvw_call";
-            case "MANUAL" -> "uvw_manual";
-            case "NOTICE" -> "uvw_doc_notice";
-            default -> null;
-        };
+    // wiki 항목 조회 공통부 — store DB, (doc_uuid, item_no) 복합 keyset
+    private static final String WIKI_FROM =
+            " FROM tb_wiki_item i" +
+            " JOIN tb_wiki_doc d ON d.doc_uuid = i.doc_uuid" +
+            " LEFT JOIN tb_wiki_chapter c ON c.doc_uuid = i.doc_uuid AND c.chapter_no = i.chapter_no";
+
+    private String wikiKeysetSql(String select, Map<String, Object> lastRow, List<Object> params, int limit) {
+        StringBuilder sb = new StringBuilder(select).append(WIKI_FROM);
+        if (lastRow != null) {
+            sb.append(" WHERE (i.doc_uuid, i.item_no) > (?, ?)");
+            // wiki 인덱스는 DOC_UUID, unified WIKI 타입은 UUID에 문서 UUID를 담는다
+            params.add(lastRow.containsKey("DOC_UUID") ? lastRow.get("DOC_UUID") : lastRow.get("UUID"));
+            params.add(lastRow.get("ITEM_NO"));
+        }
+        sb.append(" ORDER BY i.doc_uuid, i.item_no LIMIT ?");
+        params.add(limit);
+        return sb.toString();
     }
 
-    private String getIdColumnForDataType(String dataType) {
-        return switch (dataType) {
-            case "CALL" -> "CALL_UUID";
-            case "MANUAL" -> "MANUAL_UUID";
-            case "NOTICE" -> "DOC_UUID";
-            default -> null;
-        };
+    /**
+     * wiki 인덱스 배치 조회 — 항목 1행 = 문서 1건. TITLE=topic, CONTENTS=item_text.
+     */
+    private List<Map<String, Object>> fetchWikiBatch(Map<String, Object> lastRow, int limit) {
+        List<Object> params = new ArrayList<>();
+        String sql = wikiKeysetSql(
+                "SELECT i.doc_uuid, i.item_no, i.section_key, i.topic, i.item_text, i.evidence_key," +
+                " i.manual_uuid, i.manual_label, i.chapter_no, c.label AS chapter_label," +
+                " d.cat_id, d.doc_title, d.full_cat_nm, d.gen_no, d.gen_dt",
+                lastRow, params, limit);
+        try {
+            return wikiDataSource.jdbc().query(sql, (rs, rowNum) -> {
+                Map<String, Object> doc = new HashMap<>();
+                String docUuid = rs.getString("doc_uuid");
+                int itemNo = rs.getInt("item_no");
+                String itemId = docUuid + ":" + itemNo;
+                doc.put("id", itemId);
+                doc.put("ITEM_ID", itemId);
+                doc.put("DOC_UUID", docUuid);
+                doc.put("CAT_ID", rs.getInt("cat_id"));
+                doc.put("ITEM_NO", itemNo);
+                doc.put("CHAPTER_NO", rs.getObject("chapter_no"));
+                doc.put("SECTION_KEY", rs.getString("section_key"));
+                doc.put("EVIDENCE_KEY", rs.getString("evidence_key"));
+                doc.put("MANUAL_UUID", rs.getString("manual_uuid"));
+                doc.put("MANUAL_LABEL", rs.getString("manual_label"));
+                doc.put("TITLE", rs.getString("topic"));
+                doc.put("CONTENTS", rs.getString("item_text"));
+                doc.put("DOC_TITLE", rs.getString("doc_title"));
+                doc.put("CHAPTER_LABEL", rs.getString("chapter_label"));
+                doc.put("FULL_CAT_NM", rs.getString("full_cat_nm"));
+                doc.put("GEN_NO", rs.getInt("gen_no"));
+                doc.put("GEN_DT", rs.getObject("gen_dt"));
+                doc.values().removeIf(Objects::isNull);
+                return doc;
+            }, params.toArray());
+        } catch (Exception e) {
+            log.error("wiki 인덱스 데이터 조회 실패 (lastRow: {}): {}", lastRow, e.getMessage(), e);
+            throw new RuntimeException("wiki 인덱스 데이터 조회 실패", e);
+        }
     }
 
-    private String getTitleColumnForDataType(String dataType) {
-        return switch (dataType) {
-            case "CALL" -> "QUESTION";
-            case "MANUAL" -> "TITLE";
-            case "NOTICE" -> "DOC_NM";
-            default -> null;
-        };
-    }
-
-    private String getContentsColumnForDataType(String dataType) {
-        return switch (dataType) {
-            case "CALL" -> "ANSWER";
-            case "MANUAL", "NOTICE" -> "CONTENTS";
-            default -> null;
-        };
+    /**
+     * unified 인덱스의 WIKI 타입 배치 조회 — UUID=doc_uuid, _id=doc_uuid:item_no.
+     * 상담앱은 UUID와 ITEM_NO를 각각 받아 문서·항목을 연다.
+     */
+    private List<Map<String, Object>> fetchUnifiedWikiBatch(Map<String, Object> lastRow, int limit) {
+        List<Object> params = new ArrayList<>();
+        String sql = wikiKeysetSql(
+                "SELECT i.doc_uuid, i.item_no, i.topic, i.item_text, d.cat_id, d.doc_title",
+                lastRow, params, limit);
+        try {
+            return wikiDataSource.jdbc().query(sql, (rs, rowNum) -> {
+                Map<String, Object> doc = new HashMap<>();
+                String docUuid = rs.getString("doc_uuid");
+                int itemNo = rs.getInt("item_no");
+                doc.put("id", docUuid + ":" + itemNo);
+                doc.put("DATA_TYPE", "WIKI");
+                doc.put("UUID", docUuid);
+                doc.put("ITEM_NO", itemNo);
+                doc.put("CAT_ID", rs.getInt("cat_id"));
+                doc.put("DOC_TITLE", rs.getString("doc_title"));
+                doc.put("TITLE", rs.getString("topic"));
+                doc.put("CONTENTS", rs.getString("item_text"));
+                doc.values().removeIf(Objects::isNull);
+                return doc;
+            }, params.toArray());
+        } catch (Exception e) {
+            log.error("unified WIKI 데이터 조회 실패 (lastRow: {}): {}", lastRow, e.getMessage(), e);
+            throw new RuntimeException("unified WIKI 데이터 조회 실패", e);
+        }
     }
 
     private void enrichDocumentsWithEmbedding(String indexName, List<Map<String, Object>> documents) {
@@ -686,6 +793,11 @@ public class IndexingService {
                 if ("file".equalsIgnoreCase(indexName) && !isFileConfigEnabled()) {
                     return;
                 }
+                // 전용 스케줄(cron)이 있는 인덱스는 전역 동기화에서 제외
+                if (hasOwnCron(indexName)) {
+                    log.info("전역 재설정에서 제외(전용 스케줄): {}", indexName);
+                    return;
+                }
 
                 try {
                     log.info("인덱스 재설정(삭제 후 생성) 시작: {}", indexName);
@@ -748,6 +860,12 @@ public class IndexingService {
                 }
             }
         });
+    }
+
+    private boolean hasOwnCron(String indexName) {
+        if (indexProperties.getIndexes() == null) return false;
+        SearchIndexProperties.IndexSettings settings = indexProperties.getIndexes().get(indexName);
+        return settings != null && settings.getCron() != null && !settings.getCron().isBlank();
     }
 
     private boolean isIndexEnabled(String indexName) {
