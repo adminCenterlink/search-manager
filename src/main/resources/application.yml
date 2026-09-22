@@ -90,7 +90,7 @@ logging:
 
 # Search Intelligence(임베딩, 리랭킹, OCR) 설정
 search-intelligence:
-  dimension: 768
+  dimension: 1024
   url: '${SEARCH_INTELLIGENCE_HOST:http://localhost}:${SEARCH_INTELLIGENCE_PORT:8000}'
   rerank:
     enabled: ${RERANK_ENABLED:true}
