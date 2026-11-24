@@ -52,7 +52,7 @@ search:
       auto-sync: false
       sync-interval-minutes: 60
     wiki:
-      enabled: true
+      enabled: '${WIKI_INDEX_ENABLED:true}'  # 위키(CI wiki pipeline)를 설치하지 않으면 false — 원본 테이블이 없어 매일 동기화가 실패한다
       auto-sync: false
       sync-interval-minutes: 60
       cron: '${WIKI_SYNC_CRON:0 0 5 * * *}'  # 전용 스케줄(전역 동기화에서 제외). wiki 재생성(03시) 이후
@@ -64,12 +64,13 @@ search:
       ocr-enabled: true
       target-src-ids: CALL,MANUAL,NOTICE # 인덱싱 대상 SRC_ID1 목록 MANUAL_EDITOR,NOTICE_EDITOR 제외
 
-# wiki 인덱스 원본(contact-intelligence store DB). url이 비어 있으면 wiki 색인을 건너뛴다.
-wiki:
+# contact-intelligence store DB 접속 — wiki 인덱스 원본과 검색 설정(tb_search_config).
+# url이 비어 있으면 wiki 색인을 건너뛰고 검색 설정은 기본값만 쓴다.
+ci-store:
   datasource:
-    url: '${WIKI_DB_URL:}'
-    username: '${WIKI_DB_USERNAME:}'
-    password: '${WIKI_DB_PASS:}'
+    url: '${CI_STORE_DB_URL:}'
+    username: '${CI_STORE_DB_USERNAME:}'
+    password: '${CI_STORE_DB_PASS:}'
     driver-class-name: '${DB_DRIVER:org.mariadb.jdbc.Driver}'
 
 # OpenSearch 설정

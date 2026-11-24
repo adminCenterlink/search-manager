@@ -4,7 +4,7 @@ import com.cp.oslo.client.SearchIntelligenceClient;
 import com.cp.oslo.config.IndexRegistry;
 import com.cp.oslo.config.SearchIndexProperties;
 import com.cp.oslo.config.VectorFieldConfig;
-import com.cp.oslo.config.WikiDataSource;
+import com.cp.oslo.config.CiStoreDataSource;
 import com.cp.oslo.domain.IndexState;
 import com.cp.oslo.domain.SyncHistory;
 import com.cp.oslo.model.FieldDefinition;
@@ -40,7 +40,8 @@ public class IndexingService {
     private final SearchIntelligenceClient searchIntelligenceClient;
     private final VectorFieldConfig vectorFieldConfig;
     private final FileIndexingService fileIndexingService;
-    private final WikiDataSource wikiDataSource;
+    private final CiStoreDataSource ciStoreDataSource;
+    private final SearchConfigService searchConfigService;
 
     private static final int BATCH_SIZE = 500;
 
@@ -71,8 +72,8 @@ public class IndexingService {
         }
 
         // 3. wiki 인덱스는 store DB 접속이 없으면 건너뜀
-        if ("wiki".equals(indexName) && !wikiDataSource.isAvailable()) {
-            log.warn("wiki 인덱스 동기화 건너뜀: wiki.datasource.url이 설정되지 않았습니다.");
+        if ("wiki".equals(indexName) && !ciStoreDataSource.isAvailable()) {
+            log.warn("wiki 인덱스 동기화 건너뜀: ci-store.datasource.url이 설정되지 않았습니다.");
             return null;
         }
 
@@ -351,11 +352,11 @@ public class IndexingService {
             
             List<Object> params = new ArrayList<>();
 
-            // unified 인덱스인 경우 TB_CONFIG 기반 필터링 적용
+            // unified 인덱스인 경우 검색 설정 기반 필터링 적용
             if ("unified".equals(definition.getIndexName())) {
                 List<String> enabledTypes = fetchEnabledDataTypes();
                 if (enabledTypes.isEmpty()) {
-                    log.info("활성화된 검색 컬렉션(TB_CONFIG)이 없습니다. 동기화를 중단합니다.");
+                    log.info("활성화된 검색 컬렉션(tb_search_config)이 없습니다. 동기화를 중단합니다.");
                     return Collections.emptyList();
                 }
                 
@@ -413,23 +414,12 @@ public class IndexingService {
     }
 
     /**
-     * TB_CONFIG 테이블에서 활성화된(CONFIG_VALUE='Y') 검색 컬렉션 타입 조회 (File 제외)
+     * 검색 설정에서 활성화된(Y) 컬렉션 타입 조회 (예: CALL). File은 별도 인덱스라 제외
      */
     private List<String> fetchEnabledDataTypes() {
-        try {
-            // KEY_PATH가 'System.SearchEngine.Collection.'으로 시작하고 CONFIG_VALUE가 'Y'인 항목 조회
-            // CONFIG_KEY를 대문자로 변환하여 반환 (예: Call -> CALL)
-            // 단, 'FILE'은 별도 인덱스로 관리되므로 제외
-            String sql = "SELECT UPPER(CONFIG_KEY) FROM TB_CONFIG " +
-                         "WHERE KEY_PATH LIKE 'System.SearchEngine.Collection.%' " +
-                         "AND CONFIG_VALUE = 'Y' " +
-                         "AND UPPER(CONFIG_KEY) != 'FILE'";
-            
-            return jdbcTemplate.queryForList(sql, String.class);
-        } catch (Exception e) {
-            log.error("TB_CONFIG 조회 실패", e);
-            return Collections.emptyList();
-        }
+        return searchConfigService.enabledCollections().stream()
+                .filter(type -> !"FILE".equals(type))
+                .toList();
     }
 
     /**
@@ -467,13 +457,13 @@ public class IndexingService {
                 return;
             }
 
-            // 3. unified 인덱스이고 TB_CONFIG에서 비활성화된 타입이면 인덱싱하지 않고 삭제
+            // 3. unified 인덱스이고 검색 설정에서 비활성화된 타입이면 인덱싱하지 않고 삭제
             if ("unified".equals(indexName)) {
-                List<String> enabledTypes = fetchEnabledDataTypes(); // TB_CONFIG에서 활성화된 타입 목록 가져옴
+                List<String> enabledTypes = fetchEnabledDataTypes(); // 검색 설정에서 활성화된 타입 목록 가져옴
                 String documentDataType = (String) document.get("DATA_TYPE"); // 문서의 DATA_TYPE 필드
                 
                 if (documentDataType == null || !enabledTypes.contains(documentDataType.toUpperCase())) {
-                    log.warn("단건 동기화 건너뜀: unified 인덱스의 문서 '{}' (DATA_TYPE: {})가 TB_CONFIG에서 비활성화되어 있습니다. OpenSearch에서 삭제 시도.", uuid, documentDataType);
+                    log.warn("단건 동기화 건너뜀: unified 인덱스의 문서 '{}' (DATA_TYPE: {})가 검색 설정에서 비활성화되어 있습니다. OpenSearch에서 삭제 시도.", uuid, documentDataType);
                     openSearchService.deleteDocument(indexName, uuid); // OpenSearch에서 삭제
                     return;
                 }
@@ -552,12 +542,12 @@ public class IndexingService {
     }
 
     /**
-     * unified 인덱스의 원본 목록 — TB_CONFIG에서 활성화된 타입만. WIKI는 store DB 접속이 있을 때만 포함.
+     * unified 인덱스의 원본 목록 — 검색 설정에서 활성화된 타입만. WIKI는 store DB 접속이 있을 때만 포함.
      */
     private List<NamedSource> resolveUnifiedSources() {
         List<String> enabledTypes = fetchEnabledDataTypes();
         if (enabledTypes.isEmpty()) {
-            log.info("모든 데이터 타입이 비활성화되어 있습니다(TB_CONFIG).");
+            log.info("모든 데이터 타입이 비활성화되어 있습니다(tb_search_config).");
             return Collections.emptyList();
         }
         List<NamedSource> sources = new ArrayList<>();
@@ -570,10 +560,10 @@ public class IndexingService {
                 case "NOTICE" -> sources.add(new NamedSource(dataType,
                         (last, limit) -> fetchUnifiedBatch(dataType, "uvw_doc_notice", "DOC_UUID", "DOC_NM", "CONTENTS", last, limit)));
                 case "WIKI" -> {
-                    if (wikiDataSource.isAvailable()) {
+                    if (ciStoreDataSource.isAvailable()) {
                         sources.add(new NamedSource(dataType, this::fetchUnifiedWikiBatch));
                     } else {
-                        log.warn("unified WIKI 타입 건너뜀: wiki.datasource.url이 설정되지 않았습니다.");
+                        log.warn("unified WIKI 타입 건너뜀: ci-store.datasource.url이 설정되지 않았습니다.");
                     }
                 }
                 default -> log.warn("unified 인덱스에 정의되지 않은 데이터 타입입니다. 건너뜀: {}", dataType);
@@ -647,7 +637,7 @@ public class IndexingService {
                 " d.cat_id, d.doc_title, d.full_cat_nm, d.gen_no, d.gen_dt",
                 lastRow, params, limit);
         try {
-            return wikiDataSource.jdbc().query(sql, (rs, rowNum) -> {
+            return ciStoreDataSource.jdbc().query(sql, (rs, rowNum) -> {
                 Map<String, Object> doc = new HashMap<>();
                 String docUuid = rs.getString("doc_uuid");
                 int itemNo = rs.getInt("item_no");
@@ -688,7 +678,7 @@ public class IndexingService {
                 "SELECT i.doc_uuid, i.item_no, i.topic, i.item_text, d.cat_id, d.doc_title",
                 lastRow, params, limit);
         try {
-            return wikiDataSource.jdbc().query(sql, (rs, rowNum) -> {
+            return ciStoreDataSource.jdbc().query(sql, (rs, rowNum) -> {
                 Map<String, Object> doc = new HashMap<>();
                 String docUuid = rs.getString("doc_uuid");
                 int itemNo = rs.getInt("item_no");
@@ -875,22 +865,9 @@ public class IndexingService {
     }
 
     /**
-     * 파일 인덱스 실행 여부를 DB 설정(tb_config)에서 조회
+     * 파일 인덱스 실행 여부를 검색 설정에서 조회 (행이 없으면 N)
      */
     private boolean isFileConfigEnabled() {
-        try {
-            String sql = "SELECT config_value FROM tb_config WHERE key_path = 'System.SearchEngine.Collection.File'";
-            List<String> results = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString("config_value"));
-
-            if (results.isEmpty()) {
-                log.warn("파일 인덱스 설정(System.SearchEngine.Collection.File)이 DB에 없습니다. 기본값(N) 처리합니다.");
-                return false;
-            }
-
-            return "Y".equalsIgnoreCase(results.get(0));
-        } catch (Exception e) {
-            log.error("파일 인덱스 설정 조회 중 오류 발생", e);
-            return false;
-        }
+        return "Y".equalsIgnoreCase(searchConfigService.getValue(SearchConfigService.COLLECTION_PREFIX + "File"));
     }
 }
