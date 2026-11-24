@@ -1,7 +1,7 @@
 package com.cp.oslo.controller;
 
 import com.cp.oslo.config.IndexRegistry;
-import com.cp.oslo.config.WikiDataSource;
+import com.cp.oslo.config.CiStoreDataSource;
 import com.cp.oslo.domain.IndexState;
 import com.cp.oslo.repository.IndexStateRepository;
 import com.cp.oslo.service.IndexingService;
@@ -30,7 +30,7 @@ public class WikiIndexController {
     private final IndexRegistry indexRegistry;
     private final OpenSearchService openSearchService;
     private final IndexStateRepository indexStateRepository;
-    private final WikiDataSource wikiDataSource;
+    private final CiStoreDataSource ciStoreDataSource;
 
     /**
      * GET /api/v1/wiki-index/info
@@ -47,7 +47,7 @@ public class WikiIndexController {
         info.put("sourceTable", definition.getSourceTableName());
         info.put("description", definition.getDescription());
         info.put("exists", openSearchService.indexExists(INDEX_NAME));
-        info.put("sourceAvailable", wikiDataSource.isAvailable());
+        info.put("sourceAvailable", ciStoreDataSource.isAvailable());
         info.put("fieldMappingsCount", definition.getFields().size());
 
         IndexState state = indexStateRepository.findById(INDEX_NAME).orElse(null);
@@ -76,9 +76,9 @@ public class WikiIndexController {
     public ResponseEntity<Map<String, Object>> sync() {
         log.info("wiki 인덱스 동기화 요청");
         Map<String, Object> result = new HashMap<>();
-        if (!wikiDataSource.isAvailable()) {
+        if (!ciStoreDataSource.isAvailable()) {
             result.put("success", false);
-            result.put("message", "wiki.datasource.url이 설정되지 않아 동기화할 수 없습니다.");
+            result.put("message", "CI store DB 접속이 설정되지 않아 동기화할 수 없습니다.");
             return ResponseEntity.badRequest().body(result);
         }
         try {

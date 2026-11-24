@@ -1,8 +1,8 @@
 package com.cp.oslo.util;
 
+import com.cp.oslo.service.SearchConfigService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -14,18 +14,18 @@ import java.util.stream.Collectors; // Collectors import
 
 /**
  * 검색 엔진의 동의어(synonyms)와 불용어(stopwords) 설정 파일을 로드하는 유틸리티 클래스
- * (TB_CONFIG 테이블 기반)
+ * (contact_intelligence.tb_search_config 기반, SearchConfigService 경유)
  */
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class AnalyzerConfigLoader {
     
-    private final JdbcTemplate jdbcTemplate;
+    private final SearchConfigService configService;
     
-    private static final String SYNONYMS_KEY_PATH = "System.SearchEngine.Synonyms";
-    private static final String STOPWORDS_KEY_PATH = "System.SearchEngine.StopWords";
-    private static final String DICTIONARY_KEY_PATH = "System.SearchEngine.Dictionary";
+    private static final String SYNONYMS_KEY_PATH = SearchConfigService.SYNONYMS;
+    private static final String STOPWORDS_KEY_PATH = SearchConfigService.STOPWORDS;
+    private static final String DICTIONARY_KEY_PATH = SearchConfigService.DICTIONARY;
     
     /**
      * 동의어 목록을 로드합니다.
@@ -88,7 +88,7 @@ public class AnalyzerConfigLoader {
      * 하이브리드 검색 대상 필드 목록을 로드합니다. (System.SearchEngine.Fields)
      */
     public List<String> loadSearchFields() {
-        String value = loadConfigValue("System.SearchEngine.Fields");
+        String value = loadConfigValue(SearchConfigService.FIELDS);
         if (value == null || value.isEmpty()) return Collections.emptyList();
         // 쉼표로 분리하고 공백 제거 및 대문자 변환 (인덱스 필드명과 일치시키기 위해)
         return Arrays.stream(value.split(","))
@@ -101,7 +101,7 @@ public class AnalyzerConfigLoader {
      * 하이브리드 검색 텍스트 가중치를 로드합니다. (System.SearchEngine.Weight)
      */
     public Double loadSearchWeight() {
-        String value = loadConfigValue("System.SearchEngine.Weight");
+        String value = loadConfigValue(SearchConfigService.WEIGHT);
         try {
             return value != null ? Double.parseDouble(value) : 0.5; // 기본값 0.5
         } catch (NumberFormatException e) {
@@ -113,7 +113,7 @@ public class AnalyzerConfigLoader {
      * 하이브리드 검색 결과 개수를 로드합니다. (System.SearchEngine.Size)
      */
     public Integer loadSearchSize() {
-        String value = loadConfigValue("System.SearchEngine.Size");
+        String value = loadConfigValue(SearchConfigService.SIZE);
         try {
             return value != null ? Integer.parseInt(value) : 10; // 기본값 10
         } catch (NumberFormatException e) {
@@ -122,26 +122,18 @@ public class AnalyzerConfigLoader {
     }
 
     /**
-     * TB_CONFIG 테이블의 CONFIG_VALUE 컬럼 값을 조회합니다.
+     * 설정 값을 조회합니다. 행이 없거나 조회에 실패하면 기본값을 돌려받습니다.
      */
     private String loadConfigValue(String keyPath) {
-        try {
-            // EmptyResultDataAccessException 처리를 위해 list로 조회
-            String sql = "SELECT CONFIG_VALUE FROM TB_CONFIG WHERE KEY_PATH = ?";
-            List<String> results = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString("CONFIG_VALUE"), keyPath);
-            return results.isEmpty() ? null : results.get(0);
-        } catch (Exception e) {
-            log.error("설정 값 로드 실패: {}", keyPath, e);
-            return null;
-        }
+        return configService.getValue(keyPath);
     }
     
     /**
      * 데이터베이스에서 설정값을 읽어서 목록으로 반환합니다.
-     * TB_CONFIG 테이블의 DESCRIPTION 컬럼을 사용합니다.
+     * 한 줄에 한 항목입니다.
      * 주석(#으로 시작하는 줄)과 빈 줄은 무시합니다.
      * 
-     * @param keyPath TB_CONFIG의 KEY_PATH
+     * @param keyPath 설정 키(옛 TB_CONFIG의 KEY_PATH)
      * @param description 설정 설명 (로깅용)
      * @return 설정 내용 목록
      */
@@ -149,15 +141,12 @@ public class AnalyzerConfigLoader {
         List<String> resultList = new ArrayList<>();
         
         try {
-            String sql = "SELECT DESCRIPTION FROM TB_CONFIG WHERE KEY_PATH = ?";
-            List<String> results = jdbcTemplate.query(sql, (rs, rowNum) -> rs.getString("DESCRIPTION"), keyPath);
-            
-            if (results.isEmpty() || results.get(0) == null) {
-                log.warn("{} 설정이 TB_CONFIG에 존재하지 않거나 값이 비어있습니다: {}", description, keyPath);
+            String content = configService.getValue(keyPath);
+            if (content == null || content.isBlank()) {
+                log.warn("{} 설정이 비어있습니다: {}", description, keyPath);
                 return resultList;
             }
             
-            String content = results.get(0);
             // 줄바꿈 문자로 분리 (\r\n, \n, \r 모두 처리)
             String[] lines = content.split("\\R");
             

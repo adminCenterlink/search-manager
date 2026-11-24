@@ -107,7 +107,7 @@ public class IndexRegistry {
                 .build());
 
         // 5-1. Wiki 인덱스 정의 — tb_wiki_item 1행 = 문서 1건(항목 단위 원자 색인).
-        // 원본은 contact-intelligence store DB(WikiDataSource)라 조회 SQL은 IndexingService가 직접 쓴다.
+        // 원본은 contact-intelligence store DB(CiStoreDataSource)라 조회 SQL은 IndexingService가 직접 쓴다.
         // TITLE=topic(소절 제목), CONTENTS=item_text — 기존 hybrid/rerank 경로가 이 두 이름을 하드코딩한다.
         definitions.put("wiki", IndexDefinition.builder()
                 .indexName("wiki")
